@@ -5,7 +5,7 @@ model_params:
 
 
 data_params:
-  data_path: "/home/prabhleenkaur/.cache/kagglehub/datasets/paultimothymooney/chest-xray-pneumonia/versions/2"
+  data_path: "/home/prabhleenkaur/.cache/kagglehub/datasets/paultimothymooney/chest-xray-pneumonia/versions/2/chest_xray"
   train_batch_size: 64
   val_batch_size:  64
   patch_size: 64
