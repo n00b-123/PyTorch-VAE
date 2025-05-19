@@ -10,6 +10,33 @@ from torchvision import transforms
 from torchvision.datasets import CelebA
 import zipfile
 
+class ChestXrayDataset(Dataset):
+    def __init__(self, data_dir: str, split: str, transform: Optional[Callable] = None):
+        self.transform = transform
+        self.images = []
+        self.labels = []
+
+        split_dir = Path(data_dir) / split
+        pneumonia_dir = split_dir / "PNEUMONIA"
+        normal_dir = split_dir / "NORMAL"
+
+        for img_path in pneumonia_dir.glob("*.jpeg"):
+            self.images.append(img_path)
+            self.labels.append(1)
+
+        for img_path in normal_dir.glob("*.jpeg"):
+            self.images.append(img_path)
+            self.labels.append(0)
+
+    def __len__(self):
+        return len(self.images)
+
+    def __getitem__(self, idx):
+        img = default_loader(self.images[idx])
+        if self.transform:
+            img = self.transform(img)
+        label = self.labels[idx]
+        return img, label
 
 # Add your custom dataset class here
 class MyDataset(Dataset):
@@ -126,29 +153,57 @@ class VAEDataset(LightningDataModule):
         
 #       =========================  CelebA Dataset  =========================
     
-        train_transforms = transforms.Compose([transforms.RandomHorizontalFlip(),
-                                              transforms.CenterCrop(148),
-                                              transforms.Resize(self.patch_size),
-                                              transforms.ToTensor(),])
+        # train_transforms = transforms.Compose([transforms.RandomHorizontalFlip(),
+        #                                       transforms.CenterCrop(148),
+        #                                       transforms.Resize(self.patch_size),
+        #                                       transforms.ToTensor(),])
         
-        val_transforms = transforms.Compose([transforms.RandomHorizontalFlip(),
-                                            transforms.CenterCrop(148),
-                                            transforms.Resize(self.patch_size),
-                                            transforms.ToTensor(),])
+        # val_transforms = transforms.Compose([transforms.RandomHorizontalFlip(),
+        #                                     transforms.CenterCrop(148),
+        #                                     transforms.Resize(self.patch_size),
+        #                                     transforms.ToTensor(),])
         
-        self.train_dataset = MyCelebA(
+        # self.train_dataset = MyCelebA(
+        #     self.data_dir,
+        #     split='train',
+        #     transform=train_transforms,
+        #     download=False,
+        # )
+        
+        # # Replace CelebA with your dataset
+        # self.val_dataset = MyCelebA(
+        #     self.data_dir,
+        #     split='test',
+        #     transform=val_transforms,
+        #     download=False,
+        # )
+
+        train_transforms = transforms.Compose([
+            transforms.RandomHorizontalFlip(),
+            transforms.Resize(self.patch_size),
+            transforms.CenterCrop(self.patch_size),
+            transforms.ToTensor(),
+            transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),  # since these are grayscale images
+        ])
+
+        val_transforms = transforms.Compose([
+            transforms.RandomHorizontalFlip(),
+            transforms.Resize(self.patch_size),
+            transforms.CenterCrop(self.patch_size),
+            transforms.ToTensor(),
+            transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),  # since these are grayscale images
+        ])
+
+        self.train_dataset = ChestXrayDataset(
             self.data_dir,
             split='train',
             transform=train_transforms,
-            download=False,
         )
-        
-        # Replace CelebA with your dataset
-        self.val_dataset = MyCelebA(
+
+        self.val_dataset = ChestXrayDataset(
             self.data_dir,
-            split='test',
+            split='val',  # or 'test' if no val folder exists
             transform=val_transforms,
-            download=False,
         )
 #       ===============================================================
         
