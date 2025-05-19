@@ -71,7 +71,7 @@ class FIDISCallback(Callback):
 
 # === Config CLI ===
 parser = argparse.ArgumentParser(description='Train VAE')
-parser.add_argument('--config', '-c', default='configs/vae.yaml', help='Path to config file')
+parser.add_argument('--config', '-c', dest="filename", default='configs/vae.yaml', help='Path to config file')
 args = parser.parse_args()
 
 with open(args.filename, 'r') as f:
