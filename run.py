@@ -3,70 +3,99 @@ import yaml
 import argparse
 import numpy as np
 from pathlib import Path
+
+import torch
+import torch.nn.functional as F
+
 from models import *
 from experiment import VAEXperiment
+from dataset import VAEDataset
+
 import torch.backends.cudnn as cudnn
 from pytorch_lightning import Trainer
 from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.utilities.seed import seed_everything
-from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
-from dataset import VAEDataset
-from pytorch_lightning.strategies import DDPStrategy
+from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint, Callback
+from pytorch_lightning.plugins import DDPPlugin
 
+from ignite.engine import Engine, Events
+from ignite.metrics import FID, InceptionScore
+
+# === FID & IS Callback ===
+class FIDISCallback(Callback):
+    def __init__(self, every_n_epochs=10, latent_dim=128, num_samples=1024, log_file="fid_is_log.txt"):
+        super().__init__()
+        self.every_n_epochs = every_n_epochs
+        self.latent_dim = latent_dim
+        self.num_samples = num_samples
+        self.log_file = log_file
+
+    def on_train_epoch_end(self, trainer, pl_module):
+        epoch = trainer.current_epoch
+        if epoch % self.every_n_epochs != 0:
+            return
+
+        print(f"[INFO] Running FID/IS evaluation at epoch {epoch}...")
+
+        vae = pl_module.model.eval()
+        device = vae.decoder_input.weight.device
+
+        val_loader = trainer.datamodule.test_dataloader()
+        z = torch.randn(self.num_samples, self.latent_dim, device=device)
+        fake = vae.decode(z)
+
+        def resize_and_rescale(images):
+            if images.min() < 0 or images.max() > 1:
+                images = (images + 1) / 2
+            return F.interpolate(images, size=(299, 299), mode='bilinear', align_corners=False)
+
+        fake = resize_and_rescale(fake)
+
+        real, _ = next(iter(val_loader))
+        real = resize_and_rescale(real.to(device))
+
+        def evaluation_step(engine, batch):
+            return fake, real
+
+        evaluator = Engine(evaluation_step)
+        FID(device=device).attach(evaluator, "fid")
+        InceptionScore(device=device).attach(evaluator, "is")
+
+        evaluator.run([None])  # one iteration
+
+        fid_score = evaluator.state.metrics['fid']
+        is_mean, is_std = evaluator.state.metrics['is']
+        print(f"📊 Epoch {epoch} - FID: {fid_score:.4f} | IS: {is_mean:.4f} ± {is_std:.4f}")
+
+        with open(os.path.join(trainer.logger.log_dir, self.log_file), "a") as f:
+            f.write(f"Epoch {epoch} | FID: {fid_score:.4f} | IS: {is_mean:.4f} ± {is_std:.4f}\n")
+
+
+# === CLI & Config ===
 parser = argparse.ArgumentParser(description='Generic runner for VAE models')
-parser.add_argument('--config',  '-c',
-                    dest="filename",
-                    metavar='FILE',
-                    help='path to the config file',
-                    default='configs/vae.yaml')
-
+parser.add_argument('--config', '-c', dest="filename", metavar='FILE', help='path to the config file', default='configs/vae.yaml')
 args = parser.parse_args()
 
-# ===== Config loading =====
-print(f"[INFO] Loading config from {args.filename}")
 with open(args.filename, 'r') as file:
     try:
         config = yaml.safe_load(file)
-        print("[INFO] Config file loaded successfully.")
     except yaml.YAMLError as exc:
-        print("[ERROR] Failed to load config file:")
         print(exc)
-        exit(1)
 
-# ===== TensorBoard Logger =====
-print(f"[INFO] Initializing TensorBoardLogger at {config['logging_params']['save_dir']}")
-tb_logger = TensorBoardLogger(
-    save_dir=config['logging_params']['save_dir'],
-    name=config['model_params']['name'],
-)
+# === Logger, Seed, Paths ===
+tb_logger = TensorBoardLogger(save_dir=config['logging_params']['save_dir'],
+                              name=config['model_params']['name'])
 
-# ===== Seeding =====
-print(f"[INFO] Seeding with {config['exp_params']['manual_seed']}")
 seed_everything(config['exp_params']['manual_seed'], True)
 
-# ===== Model Setup =====
-print(f"[INFO] Initializing model: {config['model_params']['name']}")
+# === Model & Data ===
 model = vae_models[config['model_params']['name']](**config['model_params'])
-
-# ===== Experiment Wrapper =====
 experiment = VAEXperiment(model, config['exp_params'])
 
-# ===== Dataset Setup =====
-print("[INFO] Initializing dataset...")
 data = VAEDataset(**config["data_params"], pin_memory=len(config['trainer_params']['gpus']) != 0)
 data.setup()
 
-# ===== Verifying data path =====
-data_path = config["data_params"].get("data_path", "N/A")
-print(f"[INFO] Checking if data path exists: {data_path}")
-if not os.path.exists(data_path):
-    print(f"[ERROR] Data path '{data_path}' not found.")
-    exit(1)
-else:
-    print(f"[INFO] Data found at '{data_path}'")
-
-# ===== Trainer Setup =====
-print("[INFO] Setting up Trainer...")
+# === Trainer ===
 runner = Trainer(
     logger=tb_logger,
     callbacks=[
@@ -77,16 +106,19 @@ runner = Trainer(
             monitor="val_loss",
             save_last=True,
         ),
+        FIDISCallback(
+            every_n_epochs=10,
+            latent_dim=config["model_params"]["latent_dim"],
+            num_samples=1024
+        ),
     ],
-    strategy=DDPStrategy(find_unused_parameters=False),
+    strategy=DDPPlugin(find_unused_parameters=False),
     **config['trainer_params']
 )
 
-# ===== Creating Directories =====
-print("[INFO] Creating directories for samples and reconstructions...")
+# === Setup output folders ===
 Path(f"{tb_logger.log_dir}/Samples").mkdir(exist_ok=True, parents=True)
 Path(f"{tb_logger.log_dir}/Reconstructions").mkdir(exist_ok=True, parents=True)
 
-# ===== Start Training =====
-print(f"\n======= Training {config['model_params']['name']} =======")
+print(f"======= Training {config['model_params']['name']} =======")
 runner.fit(experiment, datamodule=data)
