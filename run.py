@@ -99,11 +99,11 @@ runner = Trainer(
             monitor="val_loss",
             save_last=True,
         ),
-        # FIDISCallback(
-        #     every_n_epochs=10,
-        #     latent_dim=config["model_params"]["latent_dim"],
-        #     num_samples=512  # Reduce from 1024 if still OOM
-        # ),
+        FIDISCallback(
+            every_n_epochs=10,
+            latent_dim=config["model_params"]["latent_dim"],
+            num_samples=512  # Reduce from 1024 if still OOM
+        ),
     ],
     strategy=DDPStrategy(find_unused_parameters=False),
     **config['trainer_params']
