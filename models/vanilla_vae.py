@@ -33,14 +33,18 @@ class VanillaVAE(BaseVAE):
             in_channels = h_dim
 
         self.encoder = nn.Sequential(*modules)
-        self.fc_mu = nn.Linear(hidden_dims[-1]*4, latent_dim)
-        self.fc_var = nn.Linear(hidden_dims[-1]*4, latent_dim)
+        
+        # Add adaptive pooling to handle variable input sizes
+        self.adaptive_pool = nn.AdaptiveAvgPool2d((4, 4))
+        
+        self.fc_mu = nn.Linear(hidden_dims[-1] * 4 * 4, latent_dim)
+        self.fc_var = nn.Linear(hidden_dims[-1] * 4 * 4, latent_dim)
 
 
         # Build Decoder
         modules = []
 
-        self.decoder_input = nn.Linear(latent_dim, hidden_dims[-1] * 4)
+        self.decoder_input = nn.Linear(latent_dim, hidden_dims[-1] * 4 * 4)
 
         hidden_dims.reverse()
 
@@ -70,7 +74,7 @@ class VanillaVAE(BaseVAE):
                                                output_padding=1),
                             nn.BatchNorm2d(hidden_dims[-1]),
                             nn.LeakyReLU(),
-                            nn.Conv2d(hidden_dims[-1], out_channels= 3,
+                            nn.Conv2d(hidden_dims[-1], out_channels= 1,  # Changed from 3 to 1 for grayscale
                                       kernel_size= 3, padding= 1),
                             nn.Tanh())
 
@@ -82,6 +86,7 @@ class VanillaVAE(BaseVAE):
         :return: (Tensor) List of latent codes
         """
         result = self.encoder(input)
+        result = self.adaptive_pool(result)  # Ensure consistent size
         result = torch.flatten(result, start_dim=1)
 
         # Split the result into mu and var components
@@ -99,9 +104,13 @@ class VanillaVAE(BaseVAE):
         :return: (Tensor) [B x C x H x W]
         """
         result = self.decoder_input(z)
-        result = result.view(-1, 512, 2, 2)
+        result = result.view(-1, 512, 4, 4)  # Changed from 2,2 to 4,4
         result = self.decoder(result)
         result = self.final_layer(result)
+        
+        # Upsample to match input size (512x512)
+        result = F.interpolate(result, size=(512, 512), mode='bilinear', align_corners=False)
+        
         return result
 
     def reparameterize(self, mu: Tensor, logvar: Tensor) -> Tensor:
